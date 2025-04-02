@@ -26,6 +26,7 @@ Returns -1 with errno EPERM
 /* Enter your target package name here */
 const TARGET_PKG = "com.dexprotector.detector.envchecks";
 const SAFE_DIR = `/data/data/${TARGET_PKG}/`;
+
 const DETECTION_LIBRARIES = [
     { pattern: "libdexprotector", message: "DexProtector: https://licelus.com" },
     { pattern: "libjiagu", message: "Jiagu360: https://jiagu.360.cn" },
@@ -82,47 +83,47 @@ function hookDlopen() {
 }
 
 function processDex(Buf, C, Path) {
-    // Convert to Uint8Array if not already
+    // Ensure the buffer is valid
+    if (!Buf || Buf.byteLength < 8) {
+        console.error(`[!] Invalid buffer for classes${C - 1}.dex`);
+        return;
+    }
     const DumpDex = Buf instanceof Uint8Array ? Buf : new Uint8Array(Buf);
     const Count = C - 1;
-    // CDEX detection (cdex001)
-    if (DumpDex[0] === 99 &&
-        DumpDex[1] === 100 &&
-        DumpDex[2] === 101 &&
-        DumpDex[3] === 120 &&
-        DumpDex[4] === 48 &&
-        DumpDex[5] === 48 &&
-        DumpDex[6] === 49) {
-        console.warn("[*]  classes" + Count + ".dex is CDex. Ignore It.");
+    // Signatures for detecting CDEX, Empty Header, and Wiped Header
+    const CDEX_SIGNATURE = [0x63, 0x64, 0x65, 0x78, 0x30, 0x30, 0x31];
+    const EMPTY_HEADER = [0x00, 0x00, 0x00, 0x00];
+    const WIPED_HEADER = [0x64];
+    // Detect CDEX
+    if (CDEX_SIGNATURE.every((val, i) => DumpDex[i] == val)) {
+        console.warn(`[*] classes${Count}.dex is a Compact Dex (CDEX). Ignoring.`);
         return;
     }
-    // Empty header detection (Dexprotector style)
-    if (DumpDex[0] === 0 &&
-        DumpDex[1] === 0 &&
-        DumpDex[2] === 0 &&
-        DumpDex[3] === 0 &&
-        DumpDex[7] === 0) {
-        console.warn("[*] 00000 Header. Probably classes" + Count + ".dex is Dexprotector's Dex.");
+    // Detect Empty Header (DexProtector)
+    if (EMPTY_HEADER.every((val, i) => DumpDex[i] == val) && DumpDex[7] == 0x00) {
+        console.warn(`[*] 00000 Header detected in classes${Count}.dex, possible DexProtector.`);
         writeDexFile(Count, Buf, Path, 0);
         return;
     }
-    // Wiped or invalid header detection
-    if (DumpDex[0] === 0 &&
-        DumpDex[0] !== 100) {
-        console.warn("[*] Wiped Header , classes" + Count + ".dex is Interesting Dex.");
+    // Detect Wiped Header (Obfuscation/Tampered)
+    if (DumpDex[0] == 0x00 || WIPED_HEADER.every((val, i) => DumpDex[i] != val)) {
+        console.warn(`[*] Wiped Header detected, classes${Count}.dex might be interesting.`);
         writeDexFile(Count, Buf, Path, 0);
         return;
     }
-    // Default case: normal dex
+    // Default: Consider it as a normal Dex file
     writeDexFile(Count, Buf, Path, 1);
 }
 
 function writeDexFile(count, buffer, path, isValid) {
-    const file = new File(path, "wb");
-    file.write(buffer);
-    file.close();
-    const log = isValid ? console.log : console.warn;
-    log(`[Dex${count}] ${path} ${isValid ? '(valid)' : '(modified)'}`);
+    try {
+        const file = new File(path, "wb");
+        file.write(buffer);
+        file.close();
+        console.log(`[Dex${count}] Saved to: ${path} ${isValid ? '(valid)' : '(modified)'}`);
+    } catch (error) {
+        console.error(`[!] Failed to save Dex${count} to ${path}: ${error.message}`);
+    }
 }
 
 function findDefineClass(libart) {
@@ -137,11 +138,9 @@ function findDefineClass(libart) {
 function dumpDex() {
     const libart = Process.findModuleByName("libart.so");
     if (!libart) return console.error("[!] libart.so not found");
-
     const defineClassAddr = findDefineClass(libart);
-    console.warn("[*] DefineClass found at :", defineClassAddr);
+    console.warn("[*] DefineClass found at : ", defineClassAddr);
     if (!defineClassAddr) return console.error("[!] DefineClass not found");
-
     const seenDex = new Set();
     let dexCount = 1;
 
@@ -150,13 +149,10 @@ function dumpDex() {
             const dexFilePtr = args[5];
             const base = dexFilePtr.add(Process.pointerSize).readPointer();
             const size = dexFilePtr.add(Process.pointerSize * 2).readUInt();
-
             if (seenDex.has(base.toString())) return;
             seenDex.add(base.toString());
-
             const dexBuffer = base.readByteArray(size);
             if (!dexBuffer || dexBuffer.byteLength !== size) return;
-
             const path = `${SAFE_DIR}classes${dexCount}.dex`;
             processDex(dexBuffer, dexCount++, path);
         }
