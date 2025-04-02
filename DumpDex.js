@@ -1,55 +1,30 @@
 /*
-Fork hook needed in case process spawn child process
-which causes frida to terminate. Return -1 only when you feel need of it.
+A hook for the fork function is required when the process spawns a child
+process, which may cause Frida to terminate. Return -1 only if it's necessary
+to prevent further execution.
 */
-
-const fork_ptr = Module.getExportByName(null, "fork");
-const fork = new NativeFunction(fork_ptr, 'int', []);
-Interceptor.replace(fork_ptr, new NativeCallback(function() {
-    console.warn("Fork Found and Replaced");
-    //return fork()
-    return -1;
-}, "int", []));
-
-// Enter your package name here
-let Pro = "com.dexprotector.detector.envchecks"
-
-let Color = {
-    RESET: "\x1b[39;49;00m",
-    Black: "0;01",
-    Blue: "4;01",
-    Cyan: "6;01",
-    Gray: "7;11",
-    Green: "2;01",
-    Purple: "5;01",
-    Red: "1;01",
-    Yellow: "3;01",
-    Light: {
-        Black: "0;11",
-        Blue: "4;11",
-        Cyan: "6;11",
-        Gray: "7;01",
-        Green: "2;11",
-        Purple: "5;11",
-        Red: "1;11",
-        Yellow: "3;11"
+(function () {
+    const forkSymbol = Module.findExportByName(null, "fork");
+    if (forkSymbol) {
+        const safeForkHandler = new NativeCallback(() => {
+            console.warn("[!] Fork intercepted - returning -1 with EPERM");
+            const errno_location = Module.findExportByName(null, "__errno_location");
+            if (errno_location) {
+                const errnoPtr = new NativeFunction(errno_location, "pointer", [])();
+                errnoPtr.writeInt(1);
+            }
+            return -1;
+        }, 'int', []);
+        Interceptor.replace(forkSymbol, safeForkHandler);
+        console.warn("[+] Fork hook: ACTIVE");
+    } else {
+        console.warn("[-] fork() not found");
     }
-};
-let LOG = function(input, kwargs) {
-    kwargs = kwargs || {};
-    let logLevel = kwargs['l'] || 'log',
-    colorPrefix = '\x1b[3',
-    colorSuffix = 'm';
-    if (typeof input === 'object') input = JSON.stringify(input, null, kwargs['i'] ? 2: null);
-    if (kwargs['c']) input = colorPrefix + kwargs['c'] + colorSuffix + input + Color.RESET;
-    console[logLevel](input);
-};
+})();
 
-function Blue(str) { LOG(str, { c: Color.Blue }); }
-function Green(str) { LOG(str, { c: Color.Green }); }
-function Purple(str) { LOG(str, { c: Color.Purple }); }
-function Red(str) { LOG(str, { c: Color.Red }); }
-function Yellow(str) { LOG(str, { c: Color.Yellow }); }
+/* Enter your package name here */
+const TARGET_PKG = "com.dexprotector.detector.envchecks";
+const SAFE_DIR = `/data/data/${TARGET_PKG}/`;
 
 function hookDlopen() {
     return new Promise((resolve, reject) => {
@@ -112,9 +87,9 @@ function hookDlopen() {
                     });
                 }
             });
-            setInterval(() => {
-                if (!hooked) clearInterval(); resolve();
-            }, 1000);
+            setTimeout(() => {
+                resolve();
+            }, 3000);
 
         } catch (e) {
             console.error("Non arm/arm64 device. Emulator ???");
@@ -127,10 +102,10 @@ function ProcessDex(Buf, C, Path) {
     let DumpDex = new Uint8Array(Buf);
     let Count = C - 1;
     if (DumpDex[0] == 99 && DumpDex[1] == 100 && DumpDex[2] == 101 && DumpDex[3] == 120 && DumpDex[4] == 48 && DumpDex[5] == 48 && DumpDex[6] == 49) {
-        console.warn("[*]  classes" + Count + ".dex is CDex. Ignore It.");
+        console.warn("[*]  classes" + Count + ".dex is Detected Compact Dex (CDEX), safe to ignore.");
     } else
-        if (DumpDex[0] == 0 && DumpDex[1] == 0 && DumpDex[2] == 0 && DumpDex[3] == 0 && DumpDex[4] == 0 && DumpDex[5] == 0 && DumpDex[6] == 0) {
-        console.warn("[*] 0000000 Header. Probably classes" + Count + ".dex is Dexprotector's Dex.");
+        if (DumpDex[0] == 0 && DumpDex[1] == 0 && DumpDex[2] == 0 && DumpDex[3] == 0 && DumpDex[7] == 0) {
+        console.warn("[*] 0000000 Header. classes" + Count + ".dex is Empty header detected, possibly obfuscated Dex.");
         console.error("[Dex"+Count +"] : "+Path);
         WriteDex(Count, Buf, Path, 0);
     } else
@@ -194,7 +169,7 @@ function Dump_Dex() {
                 let size = ptr(dex_file).add(Process.pointerSize + Process.pointerSize).readUInt();
                 if (dex_maps[base] == undefined) {
                     dex_maps[base] = size;
-                    let dex_dir_path = "/storage/emulated/0/Android/data/" + Pro + "/";
+                    let dex_dir_path = `${SAFE_DIR}`;
                     let dex_path = dex_dir_path + "classes" + dex_count + ".dex";
                     dex_count++;
                     let count_dex = dex_count;
@@ -212,4 +187,4 @@ async function main() {
     console.warn("[*] Hooking finished. Proceeding to dump...");
     Dump_Dex();
 }
-setImmediate(main);
+setTimeout(main, 100);
