@@ -3,13 +3,13 @@ Hook fork to prevent child processes from interrupting Frida
 Returns -1 with errno EPERM
 */
 (() => {
-    const forkSymbol = Module.findExportByName(null, "fork");
+    const forkSymbol = Module.findGlobalExportByName(null, "fork");
     if (!forkSymbol) {
         console.warn("[-] fork() not found");
         return;
     }
     const errnoPtr = (() => {
-        const errnoLocation = Module.findExportByName(null, "__errno_location");
+        const errnoLocation = Module.findGlobalExportByName(null, "__errno_location");
         return errnoLocation ? new NativeFunction(errnoLocation, "pointer", [])() : null;
     })();
 
